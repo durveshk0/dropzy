@@ -7,15 +7,10 @@ import { QRCodeCanvas } from 'qrcode.react';
 const API_BASE = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:5000`;
 
 function App() {
-  const [activeTab, setActiveTab] = useState('send');
-
-  // Auto-switch to receive tab if there is a ?code= in the URL (scanned via QR)
-  useEffect(() => {
+  const [activeTab, setActiveTab] = useState(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('code')) {
-      setActiveTab('receive');
-    }
-  }, []);
+    return params.get('code') ? 'receive' : 'send';
+  });
 
   return (
     <div className="app-container">
@@ -139,12 +134,12 @@ function SendTab() {
     }
   };
 
-  const reset = () => {
+  function reset() {
     setFiles([]);
     setGeneratedCode('');
     setLocalIp('');
     setTimeLeft(0);
-  };
+  }
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60).toString().padStart(2, '0');
@@ -241,20 +236,17 @@ function SendTab() {
 }
 
 function ReceiveTab() {
-  const [code, setCode] = useState('');
-  const [isChecking, setIsChecking] = useState(false);
-  const [error, setError] = useState('');
-
-  // Grab the code from URL exactly once on mount if user scanned a QR
-  useEffect(() => {
+  const [code, setCode] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     const urlCode = params.get('code');
     if (urlCode) {
-      setCode(urlCode);
-      // Clean up the URL to make it look clean without refreshing
       window.history.replaceState({}, document.title, window.location.pathname);
+      return urlCode;
     }
-  }, []);
+    return '';
+  });
+  const [isChecking, setIsChecking] = useState(false);
+  const [error, setError] = useState('');
 
   const handleDownload = async () => {
     if (code.length !== 6) {
@@ -267,8 +259,7 @@ function ReceiveTab() {
 
     try {
       // First verify if the code exists by fetching filename
-      const checkRes = await axios.get(`${API_BASE}/files/${code}`);
-      const filename = checkRes.data.filename;
+      await axios.get(`${API_BASE}/files/${code}`);
       
       // If it exists, initiate download
       window.location.href = `${API_BASE}/download/${code}`;
