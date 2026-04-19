@@ -82,30 +82,6 @@ function SendTab() {
     }
   };
 
-  const sendFileInChunks = async (conn, file) => {
-    return new Promise(async (resolve) => {
-      const CHUNK_SIZE = 128 * 1024; // 128kb
-      conn.send({ type: 'header', filename: file.name, size: file.size });
-      
-      let offset = 0;
-      while (offset < file.size) {
-        const chunk = file.slice(offset, offset + CHUNK_SIZE);
-        const buffer = await chunk.arrayBuffer();
-        
-        // Handle Backpressure so we don't crash
-        while (conn.dataChannel.bufferedAmount > 8 * 1024 * 1024) {
-          await new Promise(r => setTimeout(r, 50));
-        }
-
-        conn.send({ type: 'chunk', data: buffer });
-        offset += chunk.size;
-        setUploadProgress(Math.floor((offset / file.size) * 100)); // Update UI Progress
-      }
-      conn.send({ type: 'eof' });
-      resolve();
-    });
-  };
-
   const handleUpload = async () => {
     if (files.length === 0 || !peer || !peer.id) return;
     setIsUploading(true);
@@ -116,6 +92,34 @@ function SendTab() {
       const metadata = { 
         filename: files.length === 1 ? files[0].name : 'Multiple Files', 
         size: files.reduce((acc, f) => acc + f.size, 0) 
+      };
+
+      const totalBytes = metadata.size || 1;
+      let totalSentBytes = 0;
+
+      const sendFileInChunks = async (conn, file) => {
+        return new Promise(async (resolve) => {
+          const CHUNK_SIZE = 128 * 1024; // 128kb
+          conn.send({ type: 'header', filename: file.name, size: file.size });
+          
+          let offset = 0;
+          while (offset < file.size) {
+            const chunk = file.slice(offset, offset + CHUNK_SIZE);
+            const buffer = await chunk.arrayBuffer();
+            
+            // Handle Backpressure so we don't crash
+            while (conn.dataChannel.bufferedAmount > 8 * 1024 * 1024) {
+              await new Promise(r => setTimeout(r, 50));
+            }
+
+            conn.send({ type: 'chunk', data: buffer });
+            offset += chunk.size;
+            totalSentBytes += chunk.size;
+            setUploadProgress(Math.min(100, Math.floor((totalSentBytes / totalBytes) * 100)));
+          }
+          conn.send({ type: 'eof' });
+          resolve();
+        });
       };
 
       // 1. Signal Backend
@@ -269,6 +273,7 @@ function ReceiveTab() {
       // 1. Get Peer ID from backend
       const checkRes = await axios.get(`${API_BASE}/webrtc/${code}`);
       const senderPeerId = checkRes.data.peerId;
+      const totalSessionBytes = checkRes.data.metadata?.size || 1;
       
       setStatusText('Establishing P2P Tunnel...');
 
@@ -276,9 +281,8 @@ function ReceiveTab() {
       const conn = peer.connect(senderPeerId, { reliable: true });
       
       let incomingFilename = '';
-      let incomingSize = 0;
-      let receivedSize = 0;
       let receivedBuffers = [];
+      let totalReceivedBytes = 0;
 
       conn.on('open', () => {
          setStatusText('Connected! Receiving chunks...');
@@ -288,14 +292,11 @@ function ReceiveTab() {
       conn.on('data', (data) => {
          if (data.type === 'header') {
              incomingFilename = data.filename;
-             incomingSize = data.size;
-             receivedSize = 0;
              receivedBuffers = [];
-             setProgress(0);
          } else if (data.type === 'chunk') {
              receivedBuffers.push(data.data);
-             receivedSize += data.data.byteLength;
-             setProgress(Math.floor((receivedSize / incomingSize) * 100));
+             totalReceivedBytes += data.data.byteLength;
+             setProgress(Math.min(100, Math.floor((totalReceivedBytes / totalSessionBytes) * 100)));
          } else if (data.type === 'eof') {
              // File fully received, reconstruct and save
              const blob = new Blob(receivedBuffers);
@@ -305,8 +306,11 @@ function ReceiveTab() {
              a.download = incomingFilename;
              a.click();
              
-             setStatusText('Download Complete!');
-             setTimeout(() => { setStatusText(''); setProgress(0); setIsChecking(false); setCode(''); }, 2000);
+             // If this was the last file in the batch, the progress will naturally be at 100
+             if (totalReceivedBytes >= totalSessionBytes * 0.99) {
+                 setStatusText('Download Complete!');
+                 setTimeout(() => { setStatusText(''); setProgress(0); setIsChecking(false); setCode(''); }, 2000);
+             }
          }
       });
 
