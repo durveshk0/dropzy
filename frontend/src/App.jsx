@@ -143,9 +143,12 @@ function SendTab() {
 
   if (generatedCode) {
     // Generate URL to the frontend with the code pre-filled
-    const host = localIp || window.location.hostname;
-    const portStr = window.location.port ? ':' + window.location.port : '';
-    const directDownloadUrl = `http://${host}${portStr}/?code=${generatedCode}`;
+    let directDownloadUrl = window.location.origin + '/?code=' + generatedCode;
+    
+    // Fallback for local testing if accessed via localhost instead of network IP
+    if (window.location.hostname === 'localhost' && localIp) {
+      directDownloadUrl = `http://${localIp}:${window.location.port || '5173'}/?code=${generatedCode}`;
+    }
 
     return (
       <div className="generated-code-box fade-in">
