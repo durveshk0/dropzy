@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { UploadCloud, File as FileIcon, X, CheckCircle, DownloadCloud, Clock } from 'lucide-react';
+import { UploadCloud, File as FileIcon, CheckCircle, DownloadCloud, Clock, Zap } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
+import Peer from 'peerjs';
 
 // Use dynamic hostname so mobile devices can reach the backend on local network, or use environment variable for production
 const API_BASE = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:5000`;
@@ -16,7 +17,7 @@ function App() {
     <div className="app-container">
       <div className="glass-card">
         <h1 className="title">Dropzy</h1>
-        <p className="subtitle">Lightning fast file transfer across devices</p>
+        <p className="subtitle">Lightning fast WebRTC file transfer</p>
 
         <div className="tabs">
           <button 
@@ -46,10 +47,18 @@ function SendTab() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [generatedCode, setGeneratedCode] = useState('');
-  const [localIp, setLocalIp] = useState('');
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [timeLeft, setTimeLeft] = useState(0);
+
+  const [peer, setPeer] = useState(null);
+
+  // Initialize WebRTC Peer
+  useEffect(() => {
+    const p = new Peer();
+    setPeer(p);
+    return () => p.destroy();
+  }, []);
 
   // Countdown timer logic
   useEffect(() => {
@@ -59,39 +68,9 @@ function SendTab() {
       }
       return;
     }
-    
-    const intervalId = setInterval(() => {
-      setTimeLeft(prev => prev - 1);
-    }, 1000);
-    
+    const intervalId = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
     return () => clearInterval(intervalId);
   }, [generatedCode, timeLeft]);
-
-  // Poll for download status
-  useEffect(() => {
-    if (!generatedCode) return;
-    
-    const pollInterval = setInterval(async () => {
-      try {
-        const res = await axios.get(`${API_BASE}/status/${generatedCode}`);
-        if (res.data.downloaded) {
-          clearInterval(pollInterval);
-          setSuccessMsg('Transfer Complete!');
-          setTimeout(() => {
-            setSuccessMsg('');
-            reset();
-          }, 2000);
-        }
-      } catch (err) {
-        if (err.response && err.response.status === 404) {
-          clearInterval(pollInterval);
-          reset();
-        }
-      }
-    }, 2000);
-
-    return () => clearInterval(pollInterval);
-  }, [generatedCode]);
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -99,37 +78,72 @@ function SendTab() {
       setError('');
       setGeneratedCode('');
       setUploadProgress(0);
+      setSuccessMsg('');
     }
   };
 
+  const sendFileInChunks = async (conn, file) => {
+    return new Promise(async (resolve) => {
+      const CHUNK_SIZE = 128 * 1024; // 128kb
+      conn.send({ type: 'header', filename: file.name, size: file.size });
+      
+      let offset = 0;
+      while (offset < file.size) {
+        const chunk = file.slice(offset, offset + CHUNK_SIZE);
+        const buffer = await chunk.arrayBuffer();
+        
+        // Handle Backpressure so we don't crash
+        while (conn.dataChannel.bufferedAmount > 8 * 1024 * 1024) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+
+        conn.send({ type: 'chunk', data: buffer });
+        offset += chunk.size;
+        setUploadProgress(Math.floor((offset / file.size) * 100)); // Update UI Progress
+      }
+      conn.send({ type: 'eof' });
+      resolve();
+    });
+  };
+
   const handleUpload = async () => {
-    if (files.length === 0) return;
+    if (files.length === 0 || !peer || !peer.id) return;
     setIsUploading(true);
     setUploadProgress(0);
     setError('');
 
-    const formData = new FormData();
-    files.forEach(file => {
-      formData.append('file', file);
-    });
-
     try {
-      const response = await axios.post(`${API_BASE}/upload`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total) {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            setUploadProgress(percentCompleted);
-          }
-        }
+      const metadata = { 
+        filename: files.length === 1 ? files[0].name : 'Multiple Files', 
+        size: files.reduce((acc, f) => acc + f.size, 0) 
+      };
+
+      // 1. Signal Backend
+      const response = await axios.post(`${API_BASE}/webrtc/signal`, {
+        peerId: peer.id,
+        metadata: metadata
       });
+      
       setGeneratedCode(response.data.code);
-      setLocalIp(response.data.local_ip);
-      setTimeLeft(600); // 10 minutes = 600 seconds
+      setTimeLeft(600); // 10 minutes session
+
+      // 2. Wait for Peer to Connect directly
+      peer.on('connection', (conn) => {
+        conn.on('open', async () => {
+          setIsUploading(true); // Re-trigger UI 
+          
+          for (let file of files) {
+            await sendFileInChunks(conn, file);
+          }
+
+          setSuccessMsg('Transfer Complete!');
+          setIsUploading(false);
+          setUploadProgress(100);
+        });
+      });
+
     } catch (err) {
-      setError('Failed to upload file. Please try again.');
-      console.error(err);
-    } finally {
+      setError('Failed to setup connection. Servers might be down.');
       setIsUploading(false);
     }
   };
@@ -137,8 +151,9 @@ function SendTab() {
   function reset() {
     setFiles([]);
     setGeneratedCode('');
-    setLocalIp('');
     setTimeLeft(0);
+    setUploadProgress(0);
+    setIsUploading(false);
   }
 
   const formatTime = (seconds) => {
@@ -148,13 +163,7 @@ function SendTab() {
   };
 
   if (generatedCode) {
-    // Generate URL to the frontend with the code pre-filled
     let directDownloadUrl = window.location.origin + '/?code=' + generatedCode;
-    
-    // Fallback for local testing if accessed via localhost instead of network IP
-    if (window.location.hostname === 'localhost' && localIp) {
-      directDownloadUrl = `http://${localIp}:${window.location.port || '5173'}/?code=${generatedCode}`;
-    }
 
     return (
       <div className="generated-code-box fade-in">
@@ -163,30 +172,34 @@ function SendTab() {
             <CheckCircle size={64} color="#10b981" style={{ marginBottom: '1rem' }} />
             <h2 style={{ color: '#10b981' }}>{successMsg}</h2>
             <p className="info-text">Ready for another transfer...</p>
+            <button className="btn" onClick={reset} style={{ marginTop: '2rem' }}>Send More</button>
           </div>
         ) : (
           <>
-            <CheckCircle size={48} color="#10b981" style={{ marginBottom: '1rem' }} />
-            <h2>File Ready!</h2>
-        <p className="info-text">Scan QR to open app and download, or enter code</p>
+            <Zap size={48} color="#c084fc" style={{ marginBottom: '1rem' }} />
+            <h2>WebRTC Ready!</h2>
+            <p className="info-text">Directly connected. Waiting for receiver...</p>
         
-        <div className="generated-code">{generatedCode}</div>
-        
-        {/* QR Code Display */}
-        <div style={{ background: 'white', padding: '1rem', borderRadius: '16px', marginBottom: '1rem' }}>
-          <QRCodeCanvas value={directDownloadUrl} size={160} level={"H"} />
-        </div>
+            <div className="generated-code">{generatedCode}</div>
+            
+            <div style={{ background: 'white', padding: '1rem', borderRadius: '16px', marginBottom: '1rem' }}>
+              <QRCodeCanvas value={directDownloadUrl} size={160} level={"H"} />
+            </div>
 
-        {/* Timer Display */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fca5a5', marginTop: '0.5rem', fontWeight: 'bold', fontSize: '1.2rem' }}>
-           <Clock size={24} />
-           {formatTime(timeLeft)}
-        </div>
-        <p className="info-text" style={{margin: '0.5rem 0 0 0'}}>Share terminates automatically when time is up</p>
+            {isUploading && (
+               <div style={{width: '100%', marginBottom: '1rem'}}>
+                 <div className="progress-container">
+                   <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
+                 </div>
+                 <p className="info-text" style={{margin: '0.5rem 0'}}>Transferring Over Network... {uploadProgress}%</p>
+               </div>
+            )}
 
-        <button className="btn" onClick={reset} style={{ marginTop: '2rem' }}>
-          Terminate Share Now
-        </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fca5a5', marginTop: '0.5rem', fontWeight: 'bold' }}>
+               <Clock size={24} /> {formatTime(timeLeft)}
+            </div>
+
+            <button className="btn" onClick={reset} style={{ marginTop: '2rem' }}>Cancel</button>
           </>
         )}
       </div>
@@ -210,26 +223,16 @@ function SendTab() {
         ) : (
           <>
             <UploadCloud size={56} className="upload-icon" />
-            <h3 style={{ margin: '1rem 0 0.5rem 0' }}>Click to select a file</h3>
-            <p className="info-text">Works over same WiFi or Internet</p>
+            <h3 style={{ margin: '1rem 0 0.5rem 0' }}>Click to select files</h3>
+            <p className="info-text">Direct Peer-to-Peer Transfer Mode</p>
           </>
         )}
       </label>
 
       {error && <p className="error-text">{error}</p>}
 
-      {isUploading && (
-        <div className="progress-container">
-          <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
-        </div>
-      )}
-
-      <button 
-        className="btn" 
-        onClick={handleUpload}
-        disabled={files.length === 0 || isUploading}
-      >
-        {isUploading ? `Uploading... ${uploadProgress}%` : 'Upload & Generate Share'}
+      <button className="btn" onClick={handleUpload} disabled={files.length === 0 || isUploading}>
+        {isUploading ? <div className="loader" /> : 'Start Secure P2P Room'}
       </button>
     </div>
   );
@@ -245,8 +248,12 @@ function ReceiveTab() {
     }
     return '';
   });
+  
+  const [peer] = useState(() => new Peer());
   const [isChecking, setIsChecking] = useState(false);
   const [error, setError] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [statusText, setStatusText] = useState('');
 
   const handleDownload = async () => {
     if (code.length !== 6) {
@@ -256,22 +263,69 @@ function ReceiveTab() {
 
     setIsChecking(true);
     setError('');
+    setStatusText('Locating Peer...');
 
     try {
-      // First verify if the code exists by fetching filename
-      await axios.get(`${API_BASE}/files/${code}`);
+      // 1. Get Peer ID from backend
+      const checkRes = await axios.get(`${API_BASE}/webrtc/${code}`);
+      const senderPeerId = checkRes.data.peerId;
       
-      // If it exists, initiate download
-      window.location.href = `${API_BASE}/download/${code}`;
-      setCode(''); // Reset after success
+      setStatusText('Establishing P2P Tunnel...');
+
+      // 2. Connect to Sender
+      const conn = peer.connect(senderPeerId, { reliable: true });
+      
+      let incomingFilename = '';
+      let incomingSize = 0;
+      let receivedSize = 0;
+      let receivedBuffers = [];
+
+      conn.on('open', () => {
+         setStatusText('Connected! Receiving chunks...');
+      });
+
+      // 3. Receive Chunks
+      conn.on('data', (data) => {
+         if (data.type === 'header') {
+             incomingFilename = data.filename;
+             incomingSize = data.size;
+             receivedSize = 0;
+             receivedBuffers = [];
+             setProgress(0);
+         } else if (data.type === 'chunk') {
+             receivedBuffers.push(data.data);
+             receivedSize += data.data.byteLength;
+             setProgress(Math.floor((receivedSize / incomingSize) * 100));
+         } else if (data.type === 'eof') {
+             // File fully received, reconstruct and save
+             const blob = new Blob(receivedBuffers);
+             const url = window.URL.createObjectURL(blob);
+             const a = document.createElement('a');
+             a.href = url;
+             a.download = incomingFilename;
+             a.click();
+             
+             setStatusText('Download Complete!');
+             setTimeout(() => { setStatusText(''); setProgress(0); setIsChecking(false); setCode(''); }, 2000);
+         }
+      });
+
+      conn.on('error', () => {
+         setError('Peer Connection Lost.');
+         setIsChecking(false);
+      });
+
     } catch (err) {
-      if (err.response && err.response.status === 404) {
-        setError('Invalid code or file has expired');
-      } else {
-        setError('Connection error. Is the server running?');
+      // Fallback for old codes that were uploaded to server before P2P update
+      try {
+        await axios.get(`${API_BASE}/files/${code}`);
+        window.location.href = `${API_BASE}/download/${code}`;
+        setCode('');
+      } catch(e) {
+        setError('Invalid code or Room closed');
       }
-    } finally {
       setIsChecking(false);
+      setStatusText('');
     }
   };
 
@@ -291,25 +345,27 @@ function ReceiveTab() {
           setError('');
         }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            handleDownload();
-          }
+          if (e.key === 'Enter' && code.length === 6 && !isChecking) handleDownload();
         }}
+        disabled={isChecking}
       />
       
       {error && <p className="error-text" style={{ marginBottom: '1rem' }}>{error}</p>}
       
-      <button 
-        className="btn" 
-        onClick={handleDownload}
-        disabled={code.length !== 6 || isChecking}
-      >
-        {isChecking ? <div className="loader" /> : (
-          <>
-            <DownloadCloud size={20} />
-            Download File
-          </>
-        )}
+      {isChecking && (
+         <div style={{width: '100%', marginBottom: '1.5rem', textAlign: 'center'}}>
+           <p className="info-text" style={{marginBottom: '0.5rem', color: '#c084fc'}}>{statusText}</p>
+           {progress > 0 && (
+              <div className="progress-container">
+                 <div className="progress-fill" style={{ width: `${progress}%` }}></div>
+              </div>
+           )}
+         </div>
+      )}
+
+      <button className="btn" onClick={handleDownload} disabled={code.length !== 6 || isChecking}>
+         {!isChecking && <DownloadCloud size={20} />}
+         {isChecking ? `${progress > 0 ? progress + '%' : 'Connecting...'}` : 'Connect & Download'}
       </button>
     </div>
   );

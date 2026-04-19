@@ -102,6 +102,35 @@ def upload_file():
     local_ip = get_local_ip()
     return jsonify({'code': code, 'filename': filename, 'local_ip': local_ip}), 200
 
+# WebRTC Signaling Routes
+@app.route('/webrtc/signal', methods=['POST'])
+def webrtc_signal():
+    data = request.json
+    if not data or 'peerId' not in data:
+        return jsonify({'error': 'No peerId provided'}), 400
+    
+    code = generate_code()
+    while code in file_registry:
+        code = generate_code()
+        
+    file_registry[code] = {
+        'peerId': data['peerId'],
+        'metadata': data.get('metadata', {}),
+        'timestamp': time.time(),
+        'webrtc': True
+    }
+    
+    return jsonify({'code': code}), 200
+
+@app.route('/webrtc/<code>', methods=['GET'])
+def webrtc_get(code):
+    if code in file_registry and file_registry[code].get('webrtc'):
+        return jsonify({
+            'peerId': file_registry[code]['peerId'],
+            'metadata': file_registry[code]['metadata']
+        }), 200
+    return jsonify({'error': 'Invalid code or expired'}), 404
+
 @app.route('/files/<code>', methods=['GET'])
 def get_file_info(code):
     if code in file_registry:
