@@ -17,7 +17,7 @@ function App() {
     <div className="app-container">
       <div className="glass-card">
         <h1 className="title">Dropzy</h1>
-        <p className="subtitle">Lightning fast WebRTC file transfer</p>
+        <p className="subtitle">Lightning fast file transfer across devices</p>
 
         <div className="tabs">
           <button 
@@ -177,8 +177,8 @@ function SendTab() {
         ) : (
           <>
             <Zap size={48} color="#c084fc" style={{ marginBottom: '1rem' }} />
-            <h2>WebRTC Ready!</h2>
-            <p className="info-text">Directly connected. Waiting for receiver...</p>
+            <h2>Ready to Send!</h2>
+            <p className="info-text">Securely connected. Waiting for receiver...</p>
         
             <div className="generated-code">{generatedCode}</div>
             
@@ -224,7 +224,7 @@ function SendTab() {
           <>
             <UploadCloud size={56} className="upload-icon" />
             <h3 style={{ margin: '1rem 0 0.5rem 0' }}>Click to select files</h3>
-            <p className="info-text">Direct Peer-to-Peer Transfer Mode</p>
+            <p className="info-text">Securely transfer across devices</p>
           </>
         )}
       </label>
@@ -232,7 +232,7 @@ function SendTab() {
       {error && <p className="error-text">{error}</p>}
 
       <button className="btn" onClick={handleUpload} disabled={files.length === 0 || isUploading}>
-        {isUploading ? <div className="loader" /> : 'Start Secure P2P Room'}
+        {isUploading ? <div className="loader" /> : 'Generate Secure Link'}
       </button>
     </div>
   );
