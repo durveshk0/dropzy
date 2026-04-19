@@ -8,6 +8,7 @@ from werkzeug.utils import secure_filename
 import time
 import threading
 import socket
+import shutil
 
 def get_local_ip():
     try:
@@ -58,30 +59,48 @@ def generate_code():
 def upload_file():
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
-    file = request.files['file']
-    if file.filename == '':
+        
+    files = request.files.getlist('file')
+    if not files or files[0].filename == '':
         return jsonify({'error': 'No selected file'}), 400
     
-    if file:
-        filename = secure_filename(file.filename)
+    code = generate_code()
+    while code in file_registry:
+        code = generate_code()
+
+    if len(files) == 1:
         # Avoid collisions completely
+        file = files[0]
+        filename = secure_filename(file.filename)
         unique_name = f"{uuid.uuid4()}_{filename}"
         save_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
         file.save(save_path)
+    else:
+        # Zip multiple files
+        filename = f"Dropzy_Bundle_{code}.zip"
+        bundle_id = str(uuid.uuid4())
+        unique_name = f"{bundle_id}_{filename}"
+        save_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
         
-        code = generate_code()
-        while code in file_registry:
-            code = generate_code()
+        # Save files to temp directory then zip
+        temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], bundle_id)
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        for file in files:
+            file.save(os.path.join(temp_dir, secure_filename(file.filename)))
             
-        file_registry[code] = {
-            'filename': filename,
-            'path': save_path,
-            'timestamp': time.time(),
-            'downloaded': False
-        }
+        shutil.make_archive(save_path.replace('.zip', ''), 'zip', temp_dir)
+        shutil.rmtree(temp_dir)
         
-        local_ip = get_local_ip()
-        return jsonify({'code': code, 'filename': filename, 'local_ip': local_ip}), 200
+    file_registry[code] = {
+        'filename': filename,
+        'path': save_path,
+        'timestamp': time.time(),
+        'downloaded': False
+    }
+    
+    local_ip = get_local_ip()
+    return jsonify({'code': code, 'filename': filename, 'local_ip': local_ip}), 200
 
 @app.route('/files/<code>', methods=['GET'])
 def get_file_info(code):

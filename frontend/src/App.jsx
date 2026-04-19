@@ -47,8 +47,9 @@ function App() {
 }
 
 function SendTab() {
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [generatedCode, setGeneratedCode] = useState('');
   const [localIp, setLocalIp] = useState('');
   const [error, setError] = useState('');
@@ -98,24 +99,34 @@ function SendTab() {
   }, [generatedCode]);
 
   const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      setFiles(Array.from(e.target.files));
       setError('');
       setGeneratedCode('');
+      setUploadProgress(0);
     }
   };
 
   const handleUpload = async () => {
-    if (!file) return;
+    if (files.length === 0) return;
     setIsUploading(true);
+    setUploadProgress(0);
     setError('');
 
     const formData = new FormData();
-    formData.append('file', file);
+    files.forEach(file => {
+      formData.append('file', file);
+    });
 
     try {
       const response = await axios.post(`${API_BASE}/upload`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadProgress(percentCompleted);
+          }
+        }
       });
       setGeneratedCode(response.data.code);
       setLocalIp(response.data.local_ip);
@@ -129,7 +140,7 @@ function SendTab() {
   };
 
   const reset = () => {
-    setFile(null);
+    setFiles([]);
     setGeneratedCode('');
     setLocalIp('');
     setTimeLeft(0);
@@ -190,12 +201,16 @@ function SendTab() {
   return (
     <div className="fade-in" style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <label className="upload-box">
-        <input type="file" className="input-file" onChange={handleFileChange} />
-        {file ? (
+        <input type="file" multiple className="input-file" onChange={handleFileChange} />
+        {files.length > 0 ? (
           <>
             <FileIcon size={48} className="upload-icon" />
-            <h3 style={{ margin: '1rem 0 0.5rem 0' }}>{file.name}</h3>
-            <p className="info-text">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+            <h3 style={{ margin: '1rem 0 0.5rem 0' }}>
+              {files.length === 1 ? files[0].name : `${files.length} Files Selected`}
+            </h3>
+            <p className="info-text">
+              {(files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)} MB total
+            </p>
           </>
         ) : (
           <>
@@ -208,12 +223,18 @@ function SendTab() {
 
       {error && <p className="error-text">{error}</p>}
 
+      {isUploading && (
+        <div className="progress-container">
+          <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
+        </div>
+      )}
+
       <button 
         className="btn" 
         onClick={handleUpload}
-        disabled={!file || isUploading}
+        disabled={files.length === 0 || isUploading}
       >
-        {isUploading ? <div className="loader" /> : 'Upload & Generate Share'}
+        {isUploading ? `Uploading... ${uploadProgress}%` : 'Upload & Generate Share'}
       </button>
     </div>
   );

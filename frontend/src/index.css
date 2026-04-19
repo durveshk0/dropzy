@@ -235,6 +235,23 @@ body {
   animation: spin 1s linear infinite;
 }
 
+.progress-container {
+  width: 100%;
+  max-width: 400px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  margin-top: 1rem;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #60a5fa, #c084fc);
+  border-radius: 4px;
+  transition: width 0.2s ease-in-out;
+}
+
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
